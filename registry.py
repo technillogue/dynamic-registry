@@ -1,15 +1,13 @@
+import gzip
 import hashlib
 import json
-import gzip
 import logging
 import os
-import re
 import tarfile
-import yarl
-import aiohttp
+
 from aiohttp import web
+
 import data
-import io
 
 logging.getLogger().setLevel("DEBUG")
 
@@ -21,11 +19,11 @@ logging.getLogger().setLevel("DEBUG")
 # /v2/technillogue/nginx-reimu/manifests/latest
 # actually that lists digests for the manifests; we need to create a fake one first
 # .layers = .layers +
-{
-    "mediaType": "application/vnd.docker.image.rootfs.diff.tar.gzip",
-    "size": 28867,
-    "digest": "sha256:e2b4981857892d233ef79621f7ca0cd004733c26c2c47906fce2edc44a76a80b",
-}
+# {
+#     "mediaType": "application/vnd.docker.image.rootfs.diff.tar.gzip",
+#     "size": 28867,
+#     "digest": "sha256:e2b4981857892d233ef79621f7ca0cd004733c26c2c47906fce2edc44a76a80b",
+# }
 # (fsLayers, etc)
 # also need to update digest: "For manifests, this is the manifest body without the signature content, also known as the JWS payload."
 # serve it at /v2/technillogue/nginx-reimu/manifests/<digest>
@@ -36,20 +34,7 @@ logging.getLogger().setLevel("DEBUG")
 # ```
 
 
-def sha256_uncompressed(tar_filename):
-    sha256 = hashlib.sha256()
-
-    with tarfile.open(tar_filename, "r:gz") as f:
-        for member in f.getmembers():
-            if member.isfile():
-                file = f.extractfile(member)
-                if file:
-                    sha256.update(file.read())
-
-    return sha256.hexdigest()
-
-
-def mktar():
+def mktar() -> tarfile.TarFile:
     with tarfile.open("/tmp/reimu.tar.gz", "w:gz") as tar:
         tar.add(
             "/home/sylv/misc/registry-302/test/reimu.webp",
@@ -58,25 +43,14 @@ def mktar():
     return tar
 
 
-def sha256sum(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
+def sha256sum(_data: bytes) -> str:
+    return hashlib.sha256(_data).hexdigest()
 
 
-def diff_id():
-    buf = io.BytesIO()
-    tar = tarfile.TarFile(fileobj=buf, mode="w")
-    tar.add(
-        "/home/sylv/misc/registry-302/test/reimu.webp",
-        arcname="usr/share/nginx/html/reimu.webp",
-    )
-    buf.seek(0)
-    return "sha256:" + sha256sum(buf.read())
-
-
-
-def diff_id(fname):
-    with gzip.open(fname, 'rb') as f_in:
+def diff_id(fname: str) -> str:
+    with gzip.open(fname, "rb") as f_in:
         return "sha256:" + sha256sum(f_in.read())
+
 
 def file_digest(fname: str) -> str:
     return sha256sum(open(fname, "rb").read())
@@ -86,11 +60,9 @@ mktar()
 
 if 1:
     f = "/tmp/reimu.tar.gz"
-    # f = "/tmp/reimu.tar"
     layer_digest = "sha256:" + file_digest(f)
     layer = {
         "mediaType": "application/vnd.docker.image.rootfs.diff.tar.gzip",
-        # "mediaType": "application/vnd.docker.image.rootfs.diff.tar",
         "size": os.stat(f).st_size,
         "digest": layer_digest,
     }
@@ -99,7 +71,6 @@ if 1:
     layer_diff_id = diff_id(f)
     print("layer diff_id:", layer_diff_id)
     data.config["rootfs"]["diff_ids"].append(layer_diff_id)
-    # data.config["rootfs"]["diff_ids"].append(layer_digest)
     now = "2023-05-23T20:13:28.137843Z"  # datetime.datetime.now().isoformat()
     data.config["history"].append(
         {"created": now, "created_by": "dynamic", "comment": "dynamic"}
@@ -139,9 +110,6 @@ else:
 
 
 async def handle(req: web.Request) -> web.Response:
-    if "sess" not in req.app:
-        req.app["sess"] = aiohttp.ClientSession()
-    cs = req.app["sess"]
     print("\n=======new request=======")
     print(req)
     print(req.path)
@@ -186,14 +154,6 @@ async def handle(req: web.Request) -> web.Response:
     if req.path == f"/v2/{name}/blobs/{layer_digest}":
         print("sending blob")
         return web.FileResponse(f, headers={"Content-Type": "application/octet-stream"})
-    # async with cs.get(f"https://registry-1.docker.io{req.url.relative()}", headers=req.headers) as resp:
-    #     print("proxy for ", req.url.relative())
-
-    #     body = await resp.text()
-    #     if body[0] in "{[":
-    #         print(body)
-    #     print()
-    #     return web.Response(body=body, status=resp.status, headers=resp.headers)
 
     url = f"https://registry-1.docker.io{req.url.relative()}"
     print(url, end="\n\n")
