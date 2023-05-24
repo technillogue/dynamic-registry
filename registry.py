@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import tarfile
+from copy import deepcopy
 from dataclasses import dataclass
 
 from aiohttp import web
@@ -81,30 +82,33 @@ def make_image(image_path: str) -> Image:
     mktar(image_path, layer_fname)
 
     layer_diff_id = diff_id(layer_fname)
-    config = dict(data.config)
-    config["rootfs"]["diff_ids"].append(layer_diff_id)
+    config = deepcopy(data.config)
+    config["rootfs"]["diff_ids"].append(layer_diff_id)  # type: ignore
     history = {
         "created": datetime.datetime.now().isoformat() + "Z",
         "created_by": "dynamic",
-        "comment": "dynamic"
+        "comment": "dynamic",
     }
-    config["history"].append(history)
+    config["history"].append(history)  # type: ignore
     config_digest = sha256sum(json.dumps(config).encode())
+    print("image id:", config_digest)
 
     layer_digest = file_digest(layer_fname)
+    print("layer digest:", layer_digest)
     layer = {
         "mediaType": "application/vnd.docker.image.rootfs.diff.tar.gzip",
         "size": os.stat(layer_fname).st_size,
         "digest": layer_digest,
     }
-    manifest = dict(data.manifest)
-    manifest["layers"].append(layer)
-    manifest["config"]["digest"] = config_digest
-    manifest["config"]["size"] = len(json.dumps(config))
+    manifest = deepcopy(data.manifest)
+    manifest["layers"].append(layer)  # type: ignore
+    manifest["config"]["digest"] = config_digest  # type: ignore
+    manifest["config"]["size"] = len(json.dumps(config))  # type: ignore
     manifest_digest = sha256sum(json.dumps(manifest).encode())
+    print("manifest digest:", manifest_digest)
 
-    manifest_list = dict(data.manifest_list)
-    manifest_list["manifests"][0] = {
+    manifest_list = deepcopy(data.manifest_list)
+    manifest_list["manifests"][0] = {  # type: ignore
         "digest": manifest_digest,
         "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
         "platform": {"architecture": "amd64", "os": "linux"},
@@ -124,8 +128,9 @@ def make_image(image_path: str) -> Image:
 
 
 marisa = make_image("test/marisa.png")
-images = {marisa.name: marisa}
-
+reimu = make_image("test/reimu.webp")
+images = {marisa.name: marisa, reimu.name: reimu}
+base_image = "library/nginx"
 # if 1:
 #     f = "/tmp/reimu.tar.gz"
 #     layer_digest = "sha256:" + file_digest(f)
@@ -177,10 +182,9 @@ images = {marisa.name: marisa}
 #     name = "library/nginx"
 
 
-async def handle(req: web.Request) -> web.Response:
+async def handle(req: web.Request) -> web.StreamResponse:
     print("\n=======new request=======")
     print(req)
-    print(req.path)
 
     for name, image in images.items():
         if req.path == f"/v2/{name}/manifests/latest":
@@ -216,13 +220,15 @@ async def handle(req: web.Request) -> web.Response:
             return web.json_response(
                 image.cfg, content_type="application/vnd.docker.container.image.v1+json"
             )
+        # "/v2/dynamic/marisa/blobs/sha256:460d58e8046b92632893d2c18f9306a38cf06c3eb0420230b6fcc8018b1e8baf"
+        print(f"req needs to match /v2/{name}/blobs/{image.layer_digest}")
         if req.path == f"/v2/{name}/blobs/{image.layer_digest}":
             print("sending blob")
             return web.FileResponse(
                 image.layer_fname, headers={"Content-Type": "application/octet-stream"}
             )
 
-    url = f"https://registry-1.docker.io{req.url.relative()}"
+    url = f"https://registry-1.docker.io{req.url.relative()}".replace(marisa.name, base_image).replace(reimu.name, base_image)
     print(url, end="\n\n")
     raise web.HTTPFound(url)
 
