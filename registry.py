@@ -43,11 +43,11 @@ def file_digest(fname: str) -> str:
 @dataclass
 class Image:
     name: str
-    cfg: dict
+    cfg: str
     cfg_digest: str
-    manifest: dict
+    manifest: str
     manifest_digest: str
-    manifest_list: dict
+    manifest_list: str
     layer_fname: str
     layer_digest: str
     # layer_diff_id: str
@@ -68,7 +68,8 @@ def make_image(image_path: str) -> Image:
         "comment": "dynamic",
     }
     config["history"].append(history)  # type: ignore
-    config_digest = sha256sum(json.dumps(config).encode())
+    config_str = json.dumps(config)
+    config_digest = sha256sum(config_str.encode())
     print("image id:", config_digest)
 
     layer_digest = file_digest(layer_fname)
@@ -81,8 +82,9 @@ def make_image(image_path: str) -> Image:
     manifest = deepcopy(data.manifest)
     manifest["layers"].append(layer)  # type: ignore
     manifest["config"]["digest"] = config_digest  # type: ignore
-    manifest["config"]["size"] = len(json.dumps(config))  # type: ignore
-    manifest_digest = sha256sum(json.dumps(manifest).encode())
+    manifest["config"]["size"] = len(config_str)  # type: ignore
+    manifest_str = json.dumps(manifest)
+    manifest_digest = sha256sum(manifest_str.encode())
     print("manifest digest:", manifest_digest)
 
     manifest_list = deepcopy(data.manifest_list)
@@ -90,16 +92,17 @@ def make_image(image_path: str) -> Image:
         "digest": manifest_digest,
         "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
         "platform": {"architecture": "amd64", "os": "linux"},
-        "size": len(json.dumps(manifest)),
+        "size": len(manifest_str),
     }
+    manifest_list_str = json.dumps(manifest_list_str)
 
     return Image(
         f"dynamic/{name}",
-        cfg=config,
+        cfg=config_str,
         cfg_digest=config_digest,
-        manifest=manifest,
+        manifest=manifest_str,
         manifest_digest=manifest_digest,
-        manifest_list=manifest_list,
+        manifest_list=manifest_list_str,
         layer_fname=layer_fname,
         layer_digest=layer_digest,
     )
@@ -122,7 +125,7 @@ async def handle(req: web.Request) -> web.StreamResponse:
                 return web.Response(
                     headers={
                         "Docker-Content-Digest": image.manifest_digest,
-                        "Content-Length": str(len(json.dumps(image.manifest))),
+                        "Content-Length": str(len(image.manifest)),
                     }
                 )
             # it seems like if HEAD doesn't return Docker-Content-Digest, it's expected to return the manifest
@@ -134,20 +137,20 @@ async def handle(req: web.Request) -> web.StreamResponse:
             # maybe we should check Accept: to determine what's expected
 
             print(image.manifest_list, end="\n\n")
-            return web.json_response(
-                image.manifest_list,
+            return web.Response(
+                text=image.manifest_list,
                 content_type="application/vnd.docker.distribution.manifest.list.v2+json",
             )
             # oh
         if req.path == f"/v2/{name}/manifests/{image.manifest_digest}":
             print(image.manifest, end="\n\n")
-            return web.json_response(
+            return web.Response(
                 image.manifest,
                 content_type="application/vnd.docker.distribution.manifest.v2+json",
             )
         if req.path == f"/v2/{name}/blobs/{image.cfg_digest}":
             print(image.cfg)
-            return web.json_response(
+            return web.Response(
                 image.cfg, content_type="application/vnd.docker.container.image.v1+json"
             )
         if req.path == f"/v2/{name}/blobs/{image.layer_digest}":
@@ -156,13 +159,11 @@ async def handle(req: web.Request) -> web.StreamResponse:
                 image.layer_fname, headers={"Content-Type": "application/octet-stream"}
             )
 
-    url = (
-        f"https://registry-1.docker.io{req.url.relative()}".replace(
-            marisa.name, base_image
-        )
-        .replace(reimu.name, base_image)
-        .replace("latest", base_tag)
+    url = f"https://registry-1.docker.io{req.url.relative()}".replace(
+        "latest", base_tag
     )
+    for name in images:
+        url.replace(name, base_image)
     print(url, end="\n\n")
     raise web.HTTPFound(url)
 
