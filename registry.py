@@ -15,28 +15,6 @@ import data
 
 logging.getLogger().setLevel("DEBUG")
 
-# ```md
-# r2-public-worker.drysys.workers.dev
-# place at usr/share/nginx/html/reimu.webp and tarball
-# sha256sum
-# update some stuff, at least
-# /v2/technillogue/nginx-reimu/manifests/latest
-# actually that lists digests for the manifests; we need to create a fake one first
-# .layers = .layers +
-# {
-#     "mediaType": "application/vnd.docker.image.rootfs.diff.tar.gzip",
-#     "size": 28867,
-#     "digest": "sha256:e2b4981857892d233ef79621f7ca0cd004733c26c2c47906fce2edc44a76a80b",
-# }
-# (fsLayers, etc)
-# also need to update digest: "For manifests, this is the manifest body without the signature content, also known as the JWS payload."
-# serve it at /v2/technillogue/nginx-reimu/manifests/<digest>
-#
-# .config.digest is the entrypoint and stuff and may not be necessary
-#
-# then serve the tarball at v2/technillogue/nginx-reimu/blobs/sha256:e2b4981857892d233ef79621f7ca0cd004733c26c2c47906fce2edc44a76a80b
-# ```
-
 
 def mktar(image_path: str, layer_path: str) -> None:
     basename = os.path.basename(image_path)
@@ -132,55 +110,6 @@ reimu = make_image("test/reimu.webp")
 images = {marisa.name: marisa, reimu.name: reimu}
 base_image = "library/nginx"
 base_tag = "1.25.0-bullseye"
-# if 1:
-#     f = "/tmp/reimu.tar.gz"
-#     layer_digest = "sha256:" + file_digest(f)
-#     layer = {
-#         "mediaType": "application/vnd.docker.image.rootfs.diff.tar.gzip",
-#         "size": os.stat(f).st_size,
-#         "digest": layer_digest,
-#     }
-#     print("layer digest:", layer_digest)
-
-#     layer_diff_id = diff_id(f)
-#     print("layer diff_id:", layer_diff_id)
-#     data.config["rootfs"]["diff_ids"].append(layer_diff_id)
-#     now = "2023-05-23T20:13:28.137843Z"  # datetime.datetime.now().isoformat()
-#     data.config["history"].append(
-#         {"created": now, "created_by": "dynamic", "comment": "dynamic"}
-#     )
-#     cfg = json.dumps(data.config)
-#     cfg_digest = "sha256:" + hashlib.sha256(cfg.encode()).hexdigest()
-#     print("cfg digest:", cfg_digest)
-
-#     data.manifest["layers"].append(layer)
-#     data.manifest["config"]["digest"] = cfg_digest
-#     data.manifest["config"]["size"] = len(cfg)
-#     manifest = json.dumps(data.manifest)  # , separators=(',', ':'))
-#     mf_digest = "sha256:" + hashlib.sha256(manifest.encode()).hexdigest()
-
-#     assert len(data.manifest["layers"]) == len(
-#         list(filter(lambda x: not x.get("empty_layer"), data.config["history"]))
-#     )
-
-#     data.manifest_list["manifests"][0] = {
-#         "digest": mf_digest,
-#         "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
-#         "platform": {"architecture": "amd64", "os": "linux"},
-#         "size": len(manifest),
-#     }
-#     print("manifest digest:", mf_digest)
-#     print(
-#         "manfist list digest:",
-#         sha256sum(json.dumps(data.manifest_list).encode()),
-#         "(shouldn't show up)",
-#     )
-#     name = "dyn/reimu2"
-# else:
-#     mf_digest = (
-#         "sha256:3f01b0094e21f7d55b9eb7179d01c49fdf9c3e1e3419d315b81a9e0bae1b6a90"
-#     )
-#     name = "library/nginx"
 
 
 async def handle(req: web.Request) -> web.StreamResponse:
@@ -221,15 +150,19 @@ async def handle(req: web.Request) -> web.StreamResponse:
             return web.json_response(
                 image.cfg, content_type="application/vnd.docker.container.image.v1+json"
             )
-        # "/v2/dynamic/marisa/blobs/sha256:460d58e8046b92632893d2c18f9306a38cf06c3eb0420230b6fcc8018b1e8baf"
-        print(f"req needs to match /v2/{name}/blobs/{image.layer_digest}")
         if req.path == f"/v2/{name}/blobs/{image.layer_digest}":
             print("sending blob")
             return web.FileResponse(
                 image.layer_fname, headers={"Content-Type": "application/octet-stream"}
             )
 
-    url = f"https://registry-1.docker.io{req.url.relative()}".replace(marisa.name, base_image).replace(reimu.name, base_image).replace("latest", base_tag)
+    url = (
+        f"https://registry-1.docker.io{req.url.relative()}".replace(
+            marisa.name, base_image
+        )
+        .replace(reimu.name, base_image)
+        .replace("latest", base_tag)
+    )
     print(url, end="\n\n")
     raise web.HTTPFound(url)
 
