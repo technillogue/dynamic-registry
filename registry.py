@@ -94,7 +94,7 @@ def make_image(image_path: str) -> Image:
         "platform": {"architecture": "amd64", "os": "linux"},
         "size": len(manifest_str),
     }
-    manifest_list_str = json.dumps(manifest_list_str)
+    manifest_list_str = json.dumps(manifest_list)
 
     return Image(
         f"dynamic/{name}",
@@ -108,6 +108,7 @@ def make_image(image_path: str) -> Image:
     )
 
 
+
 marisa = make_image("test/marisa.png")
 reimu = make_image("test/reimu.webp")
 images = {marisa.name: marisa, reimu.name: reimu}
@@ -115,59 +116,79 @@ base_image = "library/nginx"
 base_tag = "1.25.0-bullseye"
 
 
-async def handle(req: web.Request) -> web.StreamResponse:
-    print("\n=======new request=======")
-    print(req)
-
-    for name, image in images.items():
-        if req.path == f"/v2/{name}/manifests/latest":
-            if req.method == "HEAD":
-                return web.Response(
-                    headers={
-                        "Docker-Content-Digest": image.manifest_digest,
-                        "Content-Length": str(len(image.manifest)),
-                    }
-                )
-            # it seems like if HEAD doesn't return Docker-Content-Digest, it's expected to return the manifest
-            # docker hashes whatever it is and uses that as the digest
-            # if it tries to hash the manifest list and use that as a digest instead of the manifest digest, that won't work
-            #
-            # however, the actual docker registry returns the manifest list at this endpoint
-            #
-            # maybe we should check Accept: to determine what's expected
-
-            print(image.manifest_list, end="\n\n")
-            return web.Response(
-                text=image.manifest_list,
-                content_type="application/vnd.docker.distribution.manifest.list.v2+json",
-            )
-            # oh
-        if req.path == f"/v2/{name}/manifests/{image.manifest_digest}":
-            print(image.manifest, end="\n\n")
-            return web.Response(
-                image.manifest,
-                content_type="application/vnd.docker.distribution.manifest.v2+json",
-            )
-        if req.path == f"/v2/{name}/blobs/{image.cfg_digest}":
-            print(image.cfg)
-            return web.Response(
-                image.cfg, content_type="application/vnd.docker.container.image.v1+json"
-            )
-        if req.path == f"/v2/{name}/blobs/{image.layer_digest}":
-            print("sending blob")
-            return web.FileResponse(
-                image.layer_fname, headers={"Content-Type": "application/octet-stream"}
-            )
-
-    url = f"https://registry-1.docker.io{req.url.relative()}".replace(
-        "latest", base_tag
-    )
+def redirect(req: web.Request) -> web.Response:
+    path = req.url.relative()
+    url = f"https://registry-1.docker.io{path}".replace("latest", base_tag)
     for name in images:
         url.replace(name, base_image)
-    print(url, end="\n\n")
-    raise web.HTTPFound(url)
+    print(url)
+    raise web.HTTPFound(redirect(req))
+
+
+def get_image(req: web.Request) -> Image:
+    image = images.get(req.match_info["name"])
+    if not image:
+        redirect(req)
+    return image
+
+
+async def manifest_route(req: web.Request) -> web.Response:
+    print(req)
+    image = get_image(req)
+    if req.match_info["digest"] == image.manifest_digest:
+        print(image.manifest, end="\n\n")
+        return web.Response(
+            text=image.manifest,
+            content_type="application/vnd.docker.distribution.manifest.v2+json",
+        )
+    # just going to pretend latest is the only tag
+    if req.method == "HEAD":
+        print("sending Docker-Content-Digest", image.manifest_digest, end="\n\n")
+        return web.Response(
+            headers={
+                "Docker-Content-Digest": image.manifest_digest,
+                "Content-Length": str(len(image.manifest)),
+            }
+        )
+    # it seems like if HEAD doesn't return Docker-Content-Digest, it's expected to return the manifest
+    # docker hashes whatever it is and uses that as the digest
+    # if it tries to hash the manifest list and use that as a digest instead of the manifest digest, that won't work
+
+    # however, the actual docker registry returns the manifest list at this endpoint
+    print(image.manifest_list)
+    return web.Response(
+        text=image.manifest_list,
+        content_type="application/vnd.docker.distribution.manifest.list.v2+json",
+    )
+
+
+async def blob_route(req: web.Request) -> web.StreamResponse:
+    print(req)
+    image = get_image(req)
+    if req.match_info["digest"] == image.cfg_digest:
+        print(image.cfg, end="\n\n")
+        return web.Response(
+            text=image.cfg,
+            content_type="application/vnd.docker.container.image.v1+json",
+        )
+    if req.match_info["digest"] == image.layer_digest:
+        print("sending layer blob\n")
+        return web.FileResponse(
+            image.layer_fname, headers={"Content-Type": "application/octet-stream"}
+        )
+    return redirect(req)
+
+
+async def default_redirect(req: web.Request) -> web.Response:
+    return redirect(req)
 
 
 app = web.Application()
-app.add_routes([web.route("*", "/{tail:.*}", handle)])
+app.add_routes(
+    [
+        web.route("*", "/v2/{name:.+}/manifests/{digest}", manifest_route),
+        web.route("*", "/v2/{name:.+}/blobs/{digest}", blob_route),
+        web.route("*", "/{tail:.*}", default_redirect),
+    ]
+)
 web.run_app(app, port=9090)
