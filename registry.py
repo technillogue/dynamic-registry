@@ -131,6 +131,7 @@ marisa = make_image("test/marisa.png")
 reimu = make_image("test/reimu.webp")
 images = {marisa.name: marisa, reimu.name: reimu}
 base_image = "library/nginx"
+base_tag = "1.25.0-bullseye"
 # if 1:
 #     f = "/tmp/reimu.tar.gz"
 #     layer_digest = "sha256:" + file_digest(f)
@@ -228,7 +229,7 @@ async def handle(req: web.Request) -> web.StreamResponse:
                 image.layer_fname, headers={"Content-Type": "application/octet-stream"}
             )
 
-    url = f"https://registry-1.docker.io{req.url.relative()}".replace(marisa.name, base_image).replace(reimu.name, base_image)
+    url = f"https://registry-1.docker.io{req.url.relative()}".replace(marisa.name, base_image).replace(reimu.name, base_image).replace("latest", base_tag)
     print(url, end="\n\n")
     raise web.HTTPFound(url)
 
