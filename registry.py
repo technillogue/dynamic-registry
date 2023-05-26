@@ -97,7 +97,8 @@ def make_image(image_path: str) -> Image:
     manifest_list_str = json.dumps(manifest_list)
 
     return Image(
-        f"dynamic/{name}",
+        #f"dynamic/{name}",
+        f"technillogue/{name}",
         cfg=config_str,
         cfg_digest=config_digest,
         manifest=manifest_str,
@@ -119,10 +120,10 @@ base_tag = "1.25.0-bullseye"
 def redirect(req: web.Request) -> web.Response:
     path = req.url.relative()
     url = f"https://registry-1.docker.io{path}".replace("latest", base_tag)
-    for name in images:
-        url.replace(name, base_image)
+    # for name in images:
+    #     url = url.replace(name, base_image)
     print(url)
-    raise web.HTTPFound(redirect(req))
+    raise web.HTTPFound(url)
 
 
 def get_image(req: web.Request) -> Image:
