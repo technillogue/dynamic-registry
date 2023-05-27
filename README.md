@@ -1,5 +1,9 @@
 build images by adding a file on the fly by only serving the changed layer
 
+try it:
+
+`docker run --rm -it -p 8080:80 dynamic-registry.fly.dev/dynamic/marisa`
+
 
 related material: 
 

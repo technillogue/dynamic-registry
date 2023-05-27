@@ -15,16 +15,29 @@ from aiohttp import web
 import data
 
 logging.getLogger().setLevel("DEBUG")
+conf = """http {
+    server {
+        listen 80;
+
+        location / {
+            root /usr/share/nginx/html;
+            try_files /index.html =404;
+        }
+    }
+}"""
 
 
 def mktar(image_path: str, layer_path: str) -> None:
     basename = os.path.basename(image_path)
     basepath = "usr/share/nginx/html"
     with tarfile.open(layer_path, "w:gz") as tar:
-        info = tarfile.TarInfo(f"{basepath}/index.html")
+        index_info = tarfile.TarInfo(f"{basepath}/index.html")
         index = f'<!DOCTYPE html><img src="{basename}">'.encode()
-        info.size = len(index)
-        tar.addfile(info, io.BytesIO(index))
+        index_info.size = len(index)
+        tar.addfile(index_info, io.BytesIO(index))
+        conf_info = tarfile.TarInfo(f"/etc/nginx.conf")
+        conf_info.size = len(conf)
+        tar.addfile(conf_info, io.BytesIO(conf.encode()))
         tar.add(image_path, arcname=f"{basepath}/{basename}")
 
 
