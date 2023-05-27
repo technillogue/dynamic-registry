@@ -6,9 +6,10 @@ import json
 import logging
 import os
 import tarfile
+import typing as t
 from copy import deepcopy
 from dataclasses import dataclass
-
+import aiohttp
 from aiohttp import web
 
 import data
@@ -97,8 +98,8 @@ def make_image(image_path: str) -> Image:
     manifest_list_str = json.dumps(manifest_list)
 
     return Image(
-        #f"dynamic/{name}",
-        f"technillogue/{name}",
+        f"dynamic/{name}",
+        # f"technillogue/{name}",
         cfg=config_str,
         cfg_digest=config_digest,
         manifest=manifest_str,
@@ -109,12 +110,26 @@ def make_image(image_path: str) -> Image:
     )
 
 
-
-marisa = make_image("test/marisa.png")
-reimu = make_image("test/reimu.webp")
+marisa = make_image("images/marisa.png")
+reimu = make_image("images/reimu.webp")
 images = {marisa.name: marisa, reimu.name: reimu}
 base_image = "library/nginx"
 base_tag = "1.25.0-bullseye"
+base_layer_digests = [layer["digest"] for layer in data.manifest["layers"]]
+
+# auth_url='https://auth.docker.io'
+# svc_url='registry.docker.io'
+# curl -fsSL "${auth_url}/token?service=${svc_url}&scope=repository:${image}:pull" | jq --raw-output .token
+# curl -fsSL -o "$file" \
+#     -H "Authorization: Bearer $1" \
+#       "${registry_url}/v2/${image}/blobs/${digest}"
+
+
+async def get_token(cs: aiohttp.ClientSession) -> str:
+    auth_url = f"https://auth.docker.io/token?service=registry.docker.io&scope=repository:{base_image}:pull"
+    resp = await cs.get(auth_url)
+    #print("token resp", resp)
+    return (await resp.json())["token"]
 
 
 def redirect(req: web.Request) -> web.Response:
@@ -123,13 +138,14 @@ def redirect(req: web.Request) -> web.Response:
     # for name in images:
     #     url = url.replace(name, base_image)
     print(url)
-    raise web.HTTPFound(url)
+    raise web.HTTPTemporaryRedirect(url)
 
 
 def get_image(req: web.Request) -> Image:
     image = images.get(req.match_info["name"])
     if not image:
         redirect(req)
+        raise Exception("unreachable")
     return image
 
 
@@ -163,28 +179,62 @@ async def manifest_route(req: web.Request) -> web.Response:
     )
 
 
+tracing = False
+
+
 async def blob_route(req: web.Request) -> web.StreamResponse:
     print(req)
+    digest = req.match_info["digest"]
     image = get_image(req)
-    if req.match_info["digest"] == image.cfg_digest:
+    if digest == image.cfg_digest:
         print(image.cfg, end="\n\n")
         return web.Response(
             text=image.cfg,
             content_type="application/vnd.docker.container.image.v1+json",
         )
-    if req.match_info["digest"] == image.layer_digest:
+    if digest == image.layer_digest:
         print("sending layer blob\n")
         return web.FileResponse(
             image.layer_fname, headers={"Content-Type": "application/octet-stream"}
         )
-    return redirect(req)
+    if digest not in base_layer_digests:
+        # uncertain about this
+        raise web.HTTPNotFound()
+    cs: aiohttp.ClientSession = req.app["cs"]
+    token = await get_token(cs)
+    resp = await cs.get(
+        f"https://registry-1.docker.io/v2/{base_image}/blobs/{digest}",
+        headers={"Authorization": f"Bearer {token}"},
+        allow_redirects=False,
+    )
+    print(resp)
+    # if "Location" not in resp.headers:
+    #     global tracing
+    #     if not tracing:
+    #         tracing = True
+    #         import pdb
+    #         pdb.set_trace()
+    # hopefully this is the cloudflare
+    print("passing through redirect to", resp.headers["Location"])
+    raise web.HTTPTemporaryRedirect(
+        resp.headers["Location"], headers=dict(resp.headers)
+    )
+    # return redirect(req)
 
 
 async def default_redirect(req: web.Request) -> web.Response:
     return redirect(req)
 
 
+async def client_session(app: web.Application) -> "t.AsyncIterator[None]":
+    app["cs"] = cs = aiohttp.ClientSession()
+    # app["token"] = await get_token(cs)
+    yield
+    await cs.close()
+
+
 app = web.Application()
+app.cleanup_ctx.append(client_session)
 app.add_routes(
     [
         web.route("*", "/v2/{name:.+}/manifests/{digest}", manifest_route),
