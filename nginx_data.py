@@ -1,4 +1,6 @@
-# digest, size
+base_image = "library/nginx"
+base_tag = "1.25.0-bullseye"
+
 manifest_list = {
     "manifests": [
         {
@@ -54,6 +56,7 @@ manifest = {
     ],
 }
 
+base_digests = [layer["digest"] for layer in manifest["layers"]]
 true, false, null = True, False, None
 
 config = {

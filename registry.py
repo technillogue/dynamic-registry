@@ -1,18 +1,21 @@
-import datetime
-import io
+import datetime as dt
 import gzip
 import hashlib
+import io
 import json
 import logging
 import os
 import tarfile
-import typing as t
+import time
+import types
 from copy import deepcopy
 from dataclasses import dataclass
+
 import aiohttp
 from aiohttp import web
 
-import data
+import nginx_data
+import whalesay_data
 
 logging.getLogger().setLevel("DEBUG")
 conf = """http {
@@ -27,17 +30,19 @@ conf = """http {
 }"""
 
 
+def add_str(tar: tarfile.TarFile, path: str, data: str) -> None:
+    info = tarfile.TarInfo(path)
+    info.size = len(data)
+    tar.addfile(info, io.BytesIO(data.encode()))
+
+
 def mktar(image_path: str, layer_path: str) -> None:
     basename = os.path.basename(image_path)
     basepath = "usr/share/nginx/html"
     with tarfile.open(layer_path, "w:gz") as tar:
-        index_info = tarfile.TarInfo(f"{basepath}/index.html")
-        index = f'<!DOCTYPE html><img src="{basename}">'.encode()
-        index_info.size = len(index)
-        tar.addfile(index_info, io.BytesIO(index))
-        conf_info = tarfile.TarInfo(f"/etc/nginx.conf")
-        conf_info.size = len(conf)
-        tar.addfile(conf_info, io.BytesIO(conf.encode()))
+        index = f'<!DOCTYPE html><img src="{basename}">'
+        add_str(tar, f"{basepath}/index.html", index)
+        add_str(tar, "/etc/nginx.conf", conf)
         tar.add(image_path, arcname=f"{basepath}/{basename}")
 
 
@@ -64,20 +69,33 @@ class Image:
     manifest_list: str
     layer_fname: str
     layer_digest: str
+    base_image: str
+    base_digests: list[str]
     # layer_diff_id: str
     tag: str = "latest"
 
 
-def make_image(image_path: str) -> Image:
+def make_nginx_image(image_path: str) -> Image:
     name = os.path.basename(image_path).split(".")[0]
     layer_fname = f"/tmp/{name}.tgz"
     mktar(image_path, layer_fname)
+    return make_image(nginx_data, f"dynamic/{name}", layer_fname)
 
+
+def make_whalesay_image(name: str) -> Image:
+    message = name.removeprefix("whalesay/").replace("-", " ")
+    layer_fname = "/tmp/{message}.tgz"
+    with tarfile.open(layer_fname, "w:gz") as tar:
+        add_str(tar, "/msg.txt", message)
+    return make_image(whalesay_data, name, layer_fname)
+
+
+def make_image(data: types.ModuleType, name: str, layer_fname: str) -> Image:
     layer_diff_id = diff_id(layer_fname)
     config = deepcopy(data.config)
     config["rootfs"]["diff_ids"].append(layer_diff_id)  # type: ignore
     history = {
-        "created": datetime.datetime.now().isoformat() + "Z",
+        "created": dt.datetime.now().isoformat() + "Z",
         "created_by": "dynamic",
         "comment": "dynamic",
     }
@@ -111,7 +129,7 @@ def make_image(image_path: str) -> Image:
     manifest_list_str = json.dumps(manifest_list)
 
     return Image(
-        f"dynamic/{name}",
+        name,
         # f"technillogue/{name}",
         cfg=config_str,
         cfg_digest=config_digest,
@@ -120,15 +138,21 @@ def make_image(image_path: str) -> Image:
         manifest_list=manifest_list_str,
         layer_fname=layer_fname,
         layer_digest=layer_digest,
+        base_image=data.base_image,
+        base_digests=data.base_digests,
     )
 
 
-marisa = make_image("images/marisa.png")
-reimu = make_image("images/reimu.webp")
+marisa = make_nginx_image("images/marisa.png")
+reimu = make_nginx_image("images/reimu.webp")
 images = {marisa.name: marisa, reimu.name: reimu}
-base_image = "library/nginx"
-base_tag = "1.25.0-bullseye"
-base_layer_digests = [layer["digest"] for layer in data.manifest["layers"]]
+# base_image = "library/nginx"
+# base_tag = "1.25.0-bullseye"
+base_layer_digests = [
+    layer["digest"]
+    for data in (whalesay_data, nginx_data)
+    for layer in data.manifest["layers"]
+]
 
 # auth_url='https://auth.docker.io'
 # svc_url='registry.docker.io'
@@ -137,17 +161,24 @@ base_layer_digests = [layer["digest"] for layer in data.manifest["layers"]]
 #     -H "Authorization: Bearer $1" \
 #       "${registry_url}/v2/${image}/blobs/${digest}"
 
+token_store: dict[str, dict] = {}
 
-async def get_token(cs: aiohttp.ClientSession) -> str:
-    auth_url = f"https://auth.docker.io/token?service=registry.docker.io&scope=repository:{base_image}:pull"
+
+async def get_token(cs: aiohttp.ClientSession, repo: str) -> str:
+    if repo in token_store:
+        if token_store[repo]["expiry"] < time.time():
+            return token_store[repo]["token"]
+    auth_url = f"https://auth.docker.io/token?service=registry.docker.io&scope=repository:{repo}:pull"
+    issued = time.time()
     resp = await cs.get(auth_url)
-    #print("token resp", resp)
-    return (await resp.json())["token"]
+    data = await resp.json()
+    token_store[repo] = {"token": data["token"], "expiry": issued + data["expires_in"]}
+    return data["token"]
 
 
 def redirect(req: web.Request) -> web.Response:
     path = req.url.relative()
-    url = f"https://registry-1.docker.io{path}".replace("latest", base_tag)
+    url = f"https://registry-1.docker.io{path}"  # .replace("latest", base_tag)
     # for name in images:
     #     url = url.replace(name, base_image)
     print(url)
@@ -155,7 +186,10 @@ def redirect(req: web.Request) -> web.Response:
 
 
 def get_image(req: web.Request) -> Image:
-    image = images.get(req.match_info["name"])
+    name = req.match_info["name"]
+    if name.startswith("whalesay/") and name not in images:
+        images[name] = make_whalesay_image(name)
+    image = images.get(name)
     if not image:
         redirect(req)
         raise Exception("unreachable")
@@ -210,13 +244,13 @@ async def blob_route(req: web.Request) -> web.StreamResponse:
         return web.FileResponse(
             image.layer_fname, headers={"Content-Type": "application/octet-stream"}
         )
-    if digest not in base_layer_digests:
+    if digest not in image.base_digests:
         # uncertain about this
         raise web.HTTPNotFound()
     cs: aiohttp.ClientSession = req.app["cs"]
-    token = await get_token(cs)
+    token = await get_token(cs, image.base_image)
     resp = await cs.get(
-        f"https://registry-1.docker.io/v2/{base_image}/blobs/{digest}",
+        f"https://registry-1.docker.io/v2/{image.base_image}/blobs/{digest}",
         headers={"Authorization": f"Bearer {token}"},
         allow_redirects=False,
     )
@@ -227,7 +261,7 @@ async def blob_route(req: web.Request) -> web.StreamResponse:
     #         tracing = True
     #         import pdb
     #         pdb.set_trace()
-    # hopefully this is the cloudflare
+    # hopefully this is the cloudflare link
     print("passing through redirect to", resp.headers["Location"])
     raise web.HTTPTemporaryRedirect(
         resp.headers["Location"], headers=dict(resp.headers)

@@ -8,6 +8,6 @@ RUN VIRTUAL_ENV=/app/venv poetry install
 FROM python:3.10
 WORKDIR /app/
 COPY --from=deps /app/venv/lib/python3.10/site-packages /app/
-COPY ./data.py ./registry.py /app/
+COPY ./nginx_data.py ./whalesay_data.py ./registry.py /app/
 COPY ./images /app/images/
 ENTRYPOINT ["/usr/local/bin/python", "/app/registry.py"]
